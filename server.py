@@ -3,7 +3,8 @@ import json
 import httpx
 import uvicorn
 from msal import ConfidentialClientApplication
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
 # Configuration
 TENANT_ID = os.environ["AZURE_TENANT_ID"]
@@ -12,7 +13,7 @@ CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 PORT = int(os.environ.get("PORT", 8000))
 
-mcp = FastMCP("Microsoft Teams")
+mcp = MCPServer("Microsoft Teams")
 
 # Auth Helper
 _app = ConfidentialClientApplication(
@@ -385,13 +386,14 @@ async def update_channel(team_id: str, channel_id: str, display_name: str = "", 
 
 # SERVER ENTRY POINT (Streamable HTTP for remote deployment)
 
-# Build the Starlette app with DNS rebinding protection disabled
-# This is needed for Railway/cloud reverse proxy deployment
-from mcp.server.transport_security import TransportSecuritySettings
+# Disable DNS rebinding protection for Railway reverse proxy
+security_settings = TransportSecuritySettings(
+    enable_dns_rebinding_protection=False,
+)
 
-_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-app = mcp._lowlevel_server.streamable_http_app(
-    transport_security=_security,
+app = mcp.streamable_http_app(
+    transport_security=security_settings,
+    host="0.0.0.0",
 )
 
 if __name__ == "__main__":
