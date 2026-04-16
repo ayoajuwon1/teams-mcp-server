@@ -1,6 +1,7 @@
 import os
 import json
 import httpx
+import uvicorn
 from msal import ConfidentialClientApplication
 from mcp.server.fastmcp import FastMCP
 
@@ -37,9 +38,9 @@ def graph_headers() -> dict:
     }
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # READ TOOLS
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 
 @mcp.tool()
 async def list_teams() -> str:
@@ -176,9 +177,9 @@ async def read_chat_messages(chat_id: str, top: int = 20) -> str:
         return json.dumps(result, indent=2)
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # WRITE TOOLS
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 
 @mcp.tool()
 async def send_message(team_id: str, channel_id: str, message: str) -> str:
@@ -386,9 +387,11 @@ async def update_channel(team_id: str, channel_id: str, display_name: str = "", 
         return json.dumps({"status": "updated", "channelId": data.get("id"), "displayName": data.get("displayName")})
 
 
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
 # SERVER ENTRY POINT (Streamable HTTP for remote deployment)
-# ──────────────────────────────────────────────
+# ââââââââââââââââââââââââââââââââââââââââââââââ
+
+app = mcp.streamable_http_app()
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
