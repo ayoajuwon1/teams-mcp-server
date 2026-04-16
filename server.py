@@ -21,6 +21,8 @@ mcp = FastMCP(
     "Microsoft Teams",
     host="0.0.0.0",
     port=PORT,
+    json_response=True,
+    stateless_http=True,
     transport_security=security_settings,
 )
 
