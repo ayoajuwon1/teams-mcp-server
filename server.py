@@ -4,7 +4,6 @@ import httpx
 import uvicorn
 from msal import ConfidentialClientApplication
 from mcp.server.fastmcp import FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
 
 # Configuration
 TENANT_ID = os.environ["AZURE_TENANT_ID"]
@@ -386,16 +385,14 @@ async def update_channel(team_id: str, channel_id: str, display_name: str = "", 
 
 # SERVER ENTRY POINT (Streamable HTTP for remote deployment)
 
-# Disable DNS rebinding protection for Railway reverse proxy
-security_settings = TransportSecuritySettings(
-    enable_dns_rebinding_protection=False,
-)
+# Build the Starlette app with DNS rebinding protection disabled
+# This is needed for Railway/cloud reverse proxy deployment
+from mcp.server.transport_security import TransportSecuritySettings
 
-app = mcp.streamable_http_app(
-    transport_security=security_settings,
-    host="0.0.0.0",
+_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+app = mcp._lowlevel_server.streamable_http_app(
+    transport_security=_security,
 )
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
