@@ -4,6 +4,7 @@ import httpx
 import uvicorn
 from msal import ConfidentialClientApplication
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 # Configuration
 TENANT_ID = os.environ["AZURE_TENANT_ID"]
@@ -38,9 +39,7 @@ def graph_headers() -> dict:
     }
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââ
 # READ TOOLS
-# ââââââââââââââââââââââââââââââââââââââââââââââ
 
 @mcp.tool()
 async def list_teams() -> str:
@@ -58,7 +57,7 @@ async def list_teams() -> str:
 @mcp.tool()
 async def list_channels(team_id: str) -> str:
     """List all channels in a team.
-    
+
     Args:
         team_id: The ID of the team
     """
@@ -75,7 +74,7 @@ async def list_channels(team_id: str) -> str:
 @mcp.tool()
 async def read_messages(team_id: str, channel_id: str, top: int = 20) -> str:
     """Read recent messages from a Teams channel.
-    
+
     Args:
         team_id: The ID of the team
         channel_id: The ID of the channel
@@ -102,7 +101,7 @@ async def read_messages(team_id: str, channel_id: str, top: int = 20) -> str:
 @mcp.tool()
 async def read_replies(team_id: str, channel_id: str, message_id: str) -> str:
     """Read replies to a specific message in a Teams channel.
-    
+
     Args:
         team_id: The ID of the team
         channel_id: The ID of the channel
@@ -129,7 +128,7 @@ async def read_replies(team_id: str, channel_id: str, message_id: str) -> str:
 @mcp.tool()
 async def list_members(team_id: str) -> str:
     """List all members of a team.
-    
+
     Args:
         team_id: The ID of the team
     """
@@ -154,7 +153,7 @@ async def list_members(team_id: str) -> str:
 @mcp.tool()
 async def read_chat_messages(chat_id: str, top: int = 20) -> str:
     """Read messages from a 1:1 or group chat.
-    
+
     Args:
         chat_id: The ID of the chat
         top: Number of messages to retrieve (default 20)
@@ -177,14 +176,12 @@ async def read_chat_messages(chat_id: str, top: int = 20) -> str:
         return json.dumps(result, indent=2)
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââ
 # WRITE TOOLS
-# ââââââââââââââââââââââââââââââââââââââââââââââ
 
 @mcp.tool()
 async def send_message(team_id: str, channel_id: str, message: str) -> str:
     """Send a message to a Teams channel.
-    
+
     Args:
         team_id: The ID of the team
         channel_id: The ID of the channel
@@ -204,7 +201,7 @@ async def send_message(team_id: str, channel_id: str, message: str) -> str:
 @mcp.tool()
 async def reply_to_message(team_id: str, channel_id: str, message_id: str, reply: str) -> str:
     """Reply to a message in a Teams channel.
-    
+
     Args:
         team_id: The ID of the team
         channel_id: The ID of the channel
@@ -225,12 +222,12 @@ async def reply_to_message(team_id: str, channel_id: str, message_id: str, reply
 @mcp.tool()
 async def create_channel(team_id: str, display_name: str, description: str = "", channel_type: str = "standard") -> str:
     """Create a new channel in a team.
-    
+
     Args:
         team_id: The ID of the team
         display_name: Name of the new channel
         description: Optional description for the channel
-        channel_type: Type of channel - 'standard' or 'private' (default: standard)
+        channel_type: Type of channel - standard or private (default: standard)
     """
     body = {
         "displayName": display_name,
@@ -251,7 +248,7 @@ async def create_channel(team_id: str, display_name: str, description: str = "",
 @mcp.tool()
 async def delete_channel(team_id: str, channel_id: str) -> str:
     """Delete a channel from a team.
-    
+
     Args:
         team_id: The ID of the team
         channel_id: The ID of the channel to delete
@@ -268,7 +265,7 @@ async def delete_channel(team_id: str, channel_id: str) -> str:
 @mcp.tool()
 async def create_team(display_name: str, description: str = "", owner_id: str = "") -> str:
     """Create a new team.
-    
+
     Args:
         display_name: Name of the new team
         description: Optional description
@@ -301,11 +298,11 @@ async def create_team(display_name: str, description: str = "", owner_id: str = 
 @mcp.tool()
 async def add_team_member(team_id: str, user_id: str, role: str = "member") -> str:
     """Add a member to a team.
-    
+
     Args:
         team_id: The ID of the team
         user_id: The user ID to add
-        role: Role for the user - 'member' or 'owner' (default: member)
+        role: Role for the user - member or owner (default: member)
     """
     body = {
         "@odata.type": "#microsoft.graph.aadUserConversationMember",
@@ -326,7 +323,7 @@ async def add_team_member(team_id: str, user_id: str, role: str = "member") -> s
 @mcp.tool()
 async def remove_team_member(team_id: str, membership_id: str) -> str:
     """Remove a member from a team.
-    
+
     Args:
         team_id: The ID of the team
         membership_id: The membership ID of the member to remove (from list_members)
@@ -343,7 +340,7 @@ async def remove_team_member(team_id: str, membership_id: str) -> str:
 @mcp.tool()
 async def send_chat_message(chat_id: str, message: str) -> str:
     """Send a message in a 1:1 or group chat.
-    
+
     Args:
         chat_id: The ID of the chat
         message: The message content (HTML supported)
@@ -362,7 +359,7 @@ async def send_chat_message(chat_id: str, message: str) -> str:
 @mcp.tool()
 async def update_channel(team_id: str, channel_id: str, display_name: str = "", description: str = "") -> str:
     """Update a channel's name or description.
-    
+
     Args:
         team_id: The ID of the team
         channel_id: The ID of the channel
@@ -387,11 +384,18 @@ async def update_channel(team_id: str, channel_id: str, display_name: str = "", 
         return json.dumps({"status": "updated", "channelId": data.get("id"), "displayName": data.get("displayName")})
 
 
-# ââââââââââââââââââââââââââââââââââââââââââââââ
 # SERVER ENTRY POINT (Streamable HTTP for remote deployment)
-# ââââââââââââââââââââââââââââââââââââââââââââââ
 
-app = mcp.streamable_http_app()
+# Disable DNS rebinding protection for Railway reverse proxy
+security_settings = TransportSecuritySettings(
+    enable_dns_rebinding_protection=False,
+)
+
+app = mcp.streamable_http_app(
+    transport_security=security_settings,
+    host="0.0.0.0",
+)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
