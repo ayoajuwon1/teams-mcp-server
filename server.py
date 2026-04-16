@@ -1,9 +1,8 @@
 import os
 import json
 import httpx
-import uvicorn
 from msal import ConfidentialClientApplication
-from mcp.server import MCPServer
+from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 # Configuration
@@ -13,7 +12,17 @@ CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 PORT = int(os.environ.get("PORT", 8000))
 
-mcp = MCPServer("Microsoft Teams")
+# Disable DNS rebinding protection for Railway reverse proxy
+security_settings = TransportSecuritySettings(
+    enable_dns_rebinding_protection=False,
+)
+
+mcp = FastMCP(
+    "Microsoft Teams",
+    host="0.0.0.0",
+    port=PORT,
+    transport_security=security_settings,
+)
 
 # Auth Helper
 _app = ConfidentialClientApplication(
@@ -43,10 +52,10 @@ def graph_headers() -> dict:
 
 @mcp.tool()
 async def list_teams() -> str:
-    """List all teams in the organization."""
+    """List all Microsoft Teams the app has access to."""
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{GRAPH_BASE}/groups?$filter=resourceProvisioningOptions/Any(x:x eq 'Team')&$select=id,displayName,description",
+            f"{GRAPH_BASE}/groups?$filter=resourceProvisioningOptions/Any(x:x eq 'Team')",
             headers=graph_headers(),
         )
         resp.raise_for_status()
@@ -100,7 +109,7 @@ async def read_messages(team_id: str, channel_id: str, top: int = 20) -> str:
 
 @mcp.tool()
 async def read_replies(team_id: str, channel_id: str, message_id: str) -> str:
-    """Read replies to a specific message in a Teams channel.
+    """Read replies to a specific message.
 
     Args:
         team_id: The ID of the team
@@ -127,7 +136,7 @@ async def read_replies(team_id: str, channel_id: str, message_id: str) -> str:
 
 @mcp.tool()
 async def list_members(team_id: str) -> str:
-    """List all members of a team.
+    """List members of a team.
 
     Args:
         team_id: The ID of the team
@@ -139,15 +148,7 @@ async def list_members(team_id: str) -> str:
         )
         resp.raise_for_status()
         members = resp.json().get("value", [])
-        result = []
-        for m in members:
-            result.append({
-                "id": m.get("id"),
-                "displayName": m.get("displayName"),
-                "email": m.get("email"),
-                "roles": m.get("roles", []),
-            })
-        return json.dumps(result, indent=2)
+        return json.dumps(members, indent=2)
 
 
 @mcp.tool()
@@ -165,15 +166,7 @@ async def read_chat_messages(chat_id: str, top: int = 20) -> str:
         )
         resp.raise_for_status()
         messages = resp.json().get("value", [])
-        result = []
-        for m in messages:
-            result.append({
-                "id": m.get("id"),
-                "from": m.get("from", {}).get("user", {}).get("displayName", "Unknown"),
-                "body": m.get("body", {}).get("content", ""),
-                "createdDateTime": m.get("createdDateTime"),
-            })
-        return json.dumps(result, indent=2)
+        return json.dumps(messages, indent=2)
 
 
 # WRITE TOOLS
@@ -191,7 +184,7 @@ async def send_message(team_id: str, channel_id: str, message: str) -> str:
         resp = await client.post(
             f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/messages",
             headers=graph_headers(),
-            json={"body": {"contentType": "html", "content": message}},
+            json={"body": {"content": message}},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -212,7 +205,7 @@ async def reply_to_message(team_id: str, channel_id: str, message_id: str, reply
         resp = await client.post(
             f"{GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies",
             headers=graph_headers(),
-            json={"body": {"contentType": "html", "content": reply}},
+            json={"body": {"content": reply}},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -220,20 +213,15 @@ async def reply_to_message(team_id: str, channel_id: str, message_id: str, reply
 
 
 @mcp.tool()
-async def create_channel(team_id: str, display_name: str, description: str = "", channel_type: str = "standard") -> str:
+async def create_channel(team_id: str, display_name: str, description: str = "") -> str:
     """Create a new channel in a team.
 
     Args:
         team_id: The ID of the team
         display_name: Name of the new channel
         description: Optional description for the channel
-        channel_type: Type of channel - standard or private (default: standard)
     """
-    body = {
-        "displayName": display_name,
-        "description": description,
-        "membershipType": channel_type,
-    }
+    body = {"displayName": display_name, "description": description}
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{GRAPH_BASE}/teams/{team_id}/channels",
@@ -263,36 +251,28 @@ async def delete_channel(team_id: str, channel_id: str) -> str:
 
 
 @mcp.tool()
-async def create_team(display_name: str, description: str = "", owner_id: str = "") -> str:
-    """Create a new team.
+async def create_team(display_name: str, description: str = "") -> str:
+    """Create a new Microsoft Team.
 
     Args:
         display_name: Name of the new team
-        description: Optional description
-        owner_id: User ID of the team owner (required)
+        description: Optional description for the team
     """
     body = {
         "template@odata.bind": "https://graph.microsoft.com/v1.0/teamsTemplates('standard')",
         "displayName": display_name,
         "description": description,
     }
-    if owner_id:
-        body["members"] = [
-            {
-                "@odata.type": "#microsoft.graph.aadUserConversationMember",
-                "roles": ["owner"],
-                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{owner_id}')",
-            }
-        ]
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{GRAPH_BASE}/teams",
             headers=graph_headers(),
             json=body,
         )
+        if resp.status_code == 202:
+            return json.dumps({"status": "creating", "location": resp.headers.get("Location", "")})
         resp.raise_for_status()
-        location = resp.headers.get("Location", "")
-        return json.dumps({"status": "creating", "message": "Team creation initiated", "location": location})
+        return json.dumps({"status": "created"})
 
 
 @mcp.tool()
@@ -301,12 +281,12 @@ async def add_team_member(team_id: str, user_id: str, role: str = "member") -> s
 
     Args:
         team_id: The ID of the team
-        user_id: The user ID to add
-        role: Role for the user - member or owner (default: member)
+        user_id: The ID of the user to add
+        role: Role for the user ('member' or 'owner')
     """
     body = {
         "@odata.type": "#microsoft.graph.aadUserConversationMember",
-        "roles": [role] if role == "owner" else [],
+        "roles": ["owner"] if role == "owner" else [],
         "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{user_id}')",
     }
     async with httpx.AsyncClient() as client:
@@ -317,7 +297,7 @@ async def add_team_member(team_id: str, user_id: str, role: str = "member") -> s
         )
         resp.raise_for_status()
         data = resp.json()
-        return json.dumps({"status": "added", "memberId": data.get("id"), "displayName": data.get("displayName")})
+        return json.dumps({"status": "added", "memberId": data.get("id")})
 
 
 @mcp.tool()
@@ -326,7 +306,7 @@ async def remove_team_member(team_id: str, membership_id: str) -> str:
 
     Args:
         team_id: The ID of the team
-        membership_id: The membership ID of the member to remove (from list_members)
+        membership_id: The membership ID of the member to remove
     """
     async with httpx.AsyncClient() as client:
         resp = await client.delete(
@@ -339,17 +319,17 @@ async def remove_team_member(team_id: str, membership_id: str) -> str:
 
 @mcp.tool()
 async def send_chat_message(chat_id: str, message: str) -> str:
-    """Send a message in a 1:1 or group chat.
+    """Send a message to a 1:1 or group chat.
 
     Args:
         chat_id: The ID of the chat
-        message: The message content (HTML supported)
+        message: The message content
     """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{GRAPH_BASE}/chats/{chat_id}/messages",
             headers=graph_headers(),
-            json={"body": {"contentType": "html", "content": message}},
+            json={"body": {"content": message}},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -384,17 +364,7 @@ async def update_channel(team_id: str, channel_id: str, display_name: str = "", 
         return json.dumps({"status": "updated", "channelId": data.get("id"), "displayName": data.get("displayName")})
 
 
-# SERVER ENTRY POINT (Streamable HTTP for remote deployment)
-
-# Disable DNS rebinding protection for Railway reverse proxy
-security_settings = TransportSecuritySettings(
-    enable_dns_rebinding_protection=False,
-)
-
-app = mcp.streamable_http_app(
-    transport_security=security_settings,
-    host="0.0.0.0",
-)
-
+# SERVER ENTRY POINT
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    mcp.run(transport="streamable-http")
+
