@@ -10,8 +10,16 @@ TENANT_ID = os.environ["AZURE_TENANT_ID"]
 CLIENT_ID = os.environ["AZURE_CLIENT_ID"]
 CLIENT_SECRET = os.environ["AZURE_CLIENT_SECRET"]
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-GRAPH_BETA = "https://graph.microsoft.com/beta"
 PORT = int(os.environ.get("PORT", 8000))
+
+# Webhook URLs for sending messages to channels (set via env vars)
+# Format: WEBHOOK_<CHANNEL_KEY>=<webhook_url>
+# Example: WEBHOOK_IT_HELPDESK=https://prod-xx.logic.azure.com/...
+WEBHOOK_URLS = {}
+for key, val in os.environ.items():
+    if key.startswith("WEBHOOK_"):
+        channel_key = key[8:].lower().replace("_", " ")
+        WEBHOOK_URLS[channel_key] = val
 
 # Disable DNS rebinding protection for Railway reverse proxy
 security_settings = TransportSecuritySettings(
@@ -27,7 +35,7 @@ mcp = FastMCP(
     transport_security=security_settings,
 )
 
-# Auth Helper
+# Auth Helper (for Graph API read operations)
 _app = ConfidentialClientApplication(
     CLIENT_ID,
     authority=f"https://login.microsoftonline.com/{TENANT_ID}",
@@ -77,7 +85,7 @@ async def _resolve_channel_id(client: httpx.AsyncClient, team_id: str, channel_n
     raise ValueError(f"Channel '{channel_name}' not found in team")
 
 
-# READ TOOLS
+# READ TOOLS (use Graph API with app permissions - works fine)
 
 @mcp.tool()
 async def list_teams() -> str:
@@ -153,6 +161,7 @@ async def find_channel(channel_name: str, team_name: str = "") -> str:
                         "team_name": team.get("displayName"),
                         "channel_id": ch["id"],
                         "channel_name": ch.get("displayName"),
+                        "webhook_configured": ch.get("displayName", "").lower().replace(" ", " ") in [k for k in WEBHOOK_URLS],
                     })
         if not results:
             return json.dumps({"error": f"No channel matching '{channel_name}' found"})
@@ -252,76 +261,88 @@ async def read_chat_messages(chat_id: str, top: int = 20) -> str:
         return json.dumps(messages, indent=2)
 
 
-# WRITE TOOLS
+# WRITE TOOLS (use Workflows webhooks for sending - Graph API app permissions are migration-only)
 
 @mcp.tool()
-async def send_message(team_id: str, channel_id: str, message: str) -> str:
-    """Send a message to a Teams channel.
+async def list_webhook_channels() -> str:
+    """List all channels that have webhook URLs configured for sending messages."""
+    if not WEBHOOK_URLS:
+        return json.dumps({"error": "No webhook URLs configured. Add WEBHOOK_<CHANNEL_KEY> environment variables in Railway."})
+    result = [{"channel_key": k, "configured": True} for k in WEBHOOK_URLS]
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def send_message(channel_key: str, message: str) -> str:
+    """Send a message to a Teams channel via webhook.
 
     Args:
-        team_id: The ID of the team
-        channel_id: The ID of the channel
-        message: The message content (HTML supported)
+        channel_key: The channel key matching a configured webhook (e.g. 'it helpdesk'). Use list_webhook_channels to see available channels.
+        message: The message content (plain text)
     """
+    key = channel_key.lower()
+    webhook_url = WEBHOOK_URLS.get(key)
+    if not webhook_url:
+        available = list(WEBHOOK_URLS.keys())
+        return json.dumps({
+            "error": f"No webhook configured for '{channel_key}'",
+            "available_channels": available,
+            "hint": "Add a WEBHOOK_<KEY> env var in Railway with the Workflows webhook URL"
+        })
     async with httpx.AsyncClient() as client:
+        # Workflows webhooks accept Adaptive Card or simple text payload
+        payload = {
+            "type": "message",
+            "attachments": [
+                {
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "contentUrl": None,
+                    "content": {
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "type": "AdaptiveCard",
+                        "version": "1.4",
+                        "body": [
+                            {
+                                "type": "TextBlock",
+                                "text": message,
+                                "wrap": True
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
         resp = await client.post(
-            f"{GRAPH_BETA}/teams/{team_id}/channels/{channel_id}/messages",
-            headers=graph_headers(),
-            json={"body": {"contentType": "html", "content": message}},
+            webhook_url,
+            json=payload,
+            timeout=30.0,
         )
-        if resp.status_code not in (200, 201):
+        if resp.status_code not in (200, 202):
             return json.dumps({"error": resp.status_code, "detail": resp.text})
-        data = resp.json()
-        return json.dumps({"status": "sent", "messageId": data.get("id")})
+        return json.dumps({"status": "sent", "channel": channel_key})
 
 
 @mcp.tool()
 async def send_message_by_name(team_name: str, channel_name: str, message: str) -> str:
-    """Send a message to a Teams channel using team and channel names instead of IDs.
+    """Send a message to a Teams channel by team and channel name. Uses webhook if configured.
 
     Args:
-        team_name: The display name of the team
-        channel_name: The display name of the channel
-        message: The message content (HTML supported)
+        team_name: The display name of the team (not used for webhook, kept for clarity)
+        channel_name: The display name of the channel - must match a configured webhook key
+        message: The message content (plain text)
     """
-    async with httpx.AsyncClient() as client:
-        try:
-            tid = await _resolve_team_id(client, team_name)
-            cid = await _resolve_channel_id(client, tid, channel_name)
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
-        resp = await client.post(
-            f"{GRAPH_BETA}/teams/{tid}/channels/{cid}/messages",
-            headers=graph_headers(),
-            json={"body": {"contentType": "html", "content": message}},
-        )
-        if resp.status_code not in (200, 201):
-            return json.dumps({"error": resp.status_code, "detail": resp.text})
-        data = resp.json()
-        return json.dumps({"status": "sent", "messageId": data.get("id"), "team": team_name, "channel": channel_name})
+    # Try to find a matching webhook
+    key = channel_name.lower()
+    if key not in WEBHOOK_URLS:
+        # Try partial match
+        for wk in WEBHOOK_URLS:
+            if key in wk or wk in key:
+                key = wk
+                break
+    return await send_message(key, message)
 
 
-@mcp.tool()
-async def reply_to_message(team_id: str, channel_id: str, message_id: str, reply: str) -> str:
-    """Reply to a message in a Teams channel.
-
-    Args:
-        team_id: The ID of the team
-        channel_id: The ID of the channel
-        message_id: The ID of the message to reply to
-        reply: The reply content (HTML supported)
-    """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{GRAPH_BETA}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies",
-            headers=graph_headers(),
-            json={"body": {"contentType": "html", "content": reply}},
-        )
-        if resp.status_code not in (200, 201):
-            return json.dumps({"error": resp.status_code, "detail": resp.text})
-        data = resp.json()
-        return json.dumps({"status": "replied", "replyId": data.get("id")})
-
+# GRAPH API WRITE TOOLS (for operations that DO work with app permissions)
 
 @mcp.tool()
 async def create_channel(team_id: str, display_name: str, description: str = "") -> str:
@@ -431,26 +452,6 @@ async def remove_team_member(team_id: str, membership_id: str) -> str:
         if resp.status_code not in (200, 204):
             return json.dumps({"error": resp.status_code, "detail": resp.text})
         return json.dumps({"status": "removed", "membershipId": membership_id})
-
-
-@mcp.tool()
-async def send_chat_message(chat_id: str, message: str) -> str:
-    """Send a message to a 1:1 or group chat.
-
-    Args:
-        chat_id: The ID of the chat
-        message: The message content
-    """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{GRAPH_BASE}/chats/{chat_id}/messages",
-            headers=graph_headers(),
-            json={"body": {"content": message}},
-        )
-        if resp.status_code not in (200, 201):
-            return json.dumps({"error": resp.status_code, "detail": resp.text})
-        data = resp.json()
-        return json.dumps({"status": "sent", "messageId": data.get("id")})
 
 
 @mcp.tool()
