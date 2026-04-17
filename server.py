@@ -411,3 +411,5 @@ async def update_channel(team_id: str, channel_id: str, display_name: str = "", 
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
+
+# Force redeploy with updated webhook env vars
